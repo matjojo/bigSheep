@@ -1,6 +1,6 @@
 package com.matjojo.bigsheep.mixin;
 
-import com.matjojo.bigsheep.bigSheep_Resizable;
+import com.matjojo.bigsheep.resizable;
 import net.minecraft.entity.EntityType;
 import net.minecraft.entity.data.DataTracker;
 import net.minecraft.entity.data.TrackedData;
@@ -10,12 +10,19 @@ import net.minecraft.entity.passive.SheepEntity;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.world.World;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
+import java.util.Random;
+
 @Mixin(SheepEntity.class)
-public abstract class SheepEntityMixin extends AnimalEntity implements bigSheep_Resizable {
+public abstract class SheepEntityMixin extends AnimalEntity implements resizable {
+	@Shadow
+	public abstract void setSheared(boolean boolean_1);
+
 	private static final TrackedData<Byte> BIGSHEEP_SIZE;
 
 	static {
@@ -36,40 +43,57 @@ public abstract class SheepEntityMixin extends AnimalEntity implements bigSheep_
 			method = "Lnet/minecraft/entity/passive/SheepEntity;initDataTracker()V",
 			at = @At(value = "HEAD")
 	)
-	public void bigSheep_initDataTrackerMixin(CallbackInfo cbi) {
+	public void initDataTrackerMixin(CallbackInfo cbi) {
 		this.dataTracker.startTracking(BIGSHEEP_SIZE, (byte) 1); // a sheep starts with it's wool, so size is one
 	}
 
-	public void bigSheep_expand(byte amount) {
-		this.dataTracker.set(BIGSHEEP_SIZE, (byte) (this.bigSheep_getSize() + amount));
+	public void expand(byte amount) {
+		this.dataTracker.set(BIGSHEEP_SIZE, (byte) (this.getSize() + amount));
 	}
 
-	public byte bigSheep_getSize() {
+	public byte getSize() {
 		return this.dataTracker.get(BIGSHEEP_SIZE);
 	}
 
-	public void bigSheep_setSize(byte amount) {
+	public void setSize(byte amount) {
 		this.dataTracker.set(BIGSHEEP_SIZE, amount);
 	}
 
 	/**
-	 * Set the size back to 0 when the sheep is sheared.
+	 * When grass is eaten the sheep grows
+	 * Then we setSheared to false
 	 *
 	 * @param cbi Mixin CallbackInfo
 	 * @author matjojo
 	 */
 	@Inject(
-			method = "Lnet/minecraft/entity/passive/SheepEntity;setSheared(Z)V",
+			method = "Lnet/minecraft/entity/passive/SheepEntity;onEatingGrass()V",
 			at = @At(value = "HEAD")
 	)
-	public void bigSheep_setShearedMixin(boolean sheared, CallbackInfo cbi) {
-		if (sheared) {
-			this.bigSheep_setSize((byte) 0);
-		} else {
-			this.bigSheep_expand((byte) 1);
-		}
+	public void onEatingGrassMixin(CallbackInfo cbi) {
+		this.expand((byte) 1);
+		this.setSheared(false);
 	}
 
+//	/**
+//	 * We need to inject in dropItems when setSheared is called.
+//	 * The setSheared method is also called when the world is initialised,
+//	 * so if we just injected in setSheared the sheep would shrink or grown when the world is loaded.
+//	 * For that reason we inject into the end of dropItems
+//	 *
+//	 * @param cbi the mixin CallbackInfo
+//	 * @author Matjojo
+//	 */
+//	@Inject(
+//			method = "Lnet/minecraft/entity/passive/SheepEntity;dropItems()V",
+//			at = @At(
+//					value = "INVOKE",
+//					target = "Lnet/minecraft/entity/passive/SheepEntity;setSheared(Z)V"
+//			)
+//	)
+//	public void bigSheep_onShearedMixin(CallbackInfo cbi) {
+//		this.setSize((byte)0);
+//	}
 
 	/**
 	 * @param compoundTag The CompoundTag that gets passed into the writeCustomDataToTag method we mixin to
@@ -81,18 +105,38 @@ public abstract class SheepEntityMixin extends AnimalEntity implements bigSheep_
 			method = "writeCustomDataToTag(Lnet/minecraft/nbt/CompoundTag;)V",
 			at = @At(value = "RETURN")
 	)
-	public void bigSheep_writeDataToTagMixin(CompoundTag compoundTag, CallbackInfo cbi) {
-		compoundTag.putByte("bigSheep_size", this.bigSheep_getSize());
+	public void writeCustomDataToTagMixin(CompoundTag compoundTag, CallbackInfo cbi) {
+		compoundTag.putByte("bigSheep_size", this.getSize());
+		compoundTag.putBoolean("Sheared", this.getSize() == 0); // when the sheep is saved we need to ensure that the sheared call is set back correctly
 	}
-
 
 	@Inject(
 			method = "readCustomDataFromTag(Lnet/minecraft/nbt/CompoundTag;)V",
 			at = @At(value = "RETURN")
 	)
-	public void bigSheep_readCustomDataFromTagMixin(CompoundTag compoundTag, CallbackInfo cbi) {
-		this.bigSheep_setSize(compoundTag.getByte("bigSheep_size"));
+	public void readCustomDataFromTagMixin(CompoundTag compoundTag, CallbackInfo cbi) {
+		this.setSize(compoundTag.getByte("bigSheep_size"));
 	}
+
+	/**
+	 * We redirect the call to the random to our method, that then returns a different amount of items.
+	 *
+	 * @param random The random instance of the sheep
+	 * @param bound  The bound given by the minecraft code, at the time of writing always 3
+	 * @return A new bound that takes into account the size of the sheep.
+	 * @reason Could not find a different way to edit this local variable, will research a better way.
+	 * @author matjojo
+	 */
+	@Redirect(method = "dropItems()V",
+			at = @At(value = "INVOKE",
+					target = "Ljava/util/Random;nextInt(I)I"))
+	private int nextIntMixin(Random random, int bound) {
+		int next = random.nextInt((this.getSize() * 2) + 1);
+		this.setSize((byte) 0);
+		return next;
+	}
+
+
 
 
 }
